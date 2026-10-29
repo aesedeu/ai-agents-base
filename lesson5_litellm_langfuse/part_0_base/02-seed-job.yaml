@@ -1,0 +1,29 @@
+# Job — задача «выполнить и завершиться»: загрузить датасет банка в базу
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bank-seed
+spec:
+  backoffLimit: 3                    # при падении — до 3 повторов
+  template:
+    spec:
+      restartPolicy: Never           # Job не перезапускает контейнер, а создаёт новый под
+      initContainers:                # выполняются ДО основного контейнера: ждём, пока база поднимется
+      - name: wait-for-db
+        image: postgres:16-alpine
+        command: [sh, -c, "until pg_isready -h bank-db -U postgres; do echo 'жду базу…'; sleep 2; done"]
+      containers:
+      - name: seed
+        image: bank-agents:1
+        command: [python, scripts/load_berka.py]     # тот же загрузчик, что в занятиях 2–3
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: bank-db-secret
+              key: POSTGRES_PASSWORD
+        - name: ADMIN_DSN                            # $(VAR) — подстановка переменной, объявленной выше
+          value: postgresql://postgres:$(POSTGRES_PASSWORD)@bank-db:5432/bank
+        resources:
+          requests: {cpu: 200m, memory: 256Mi}
+          limits: {cpu: "1", memory: 1Gi}

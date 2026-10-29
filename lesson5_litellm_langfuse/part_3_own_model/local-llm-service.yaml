@@ -1,0 +1,31 @@
+# Своя модель (vLLM) работает ВНЕ кластера — на ноутбуке (или на ВМ с GPU). Даём ей
+# внутрикластерное имя local-llm:8080, как будто это обычный сервис в кубере.
+# Service БЕЗ selector: поды он не ищет, а адрес, куда слать трафик, мы задаём сами — в EndpointSlice.
+# Сменился адрес сервера с моделью — правим одну строку здесь, LiteLLM и агенты ничего не заметят.
+apiVersion: v1
+kind: Service
+metadata:
+  name: local-llm
+  labels:
+    app: local-llm                        # по этой метке Prometheus найдёт сервис (мониторинг, часть 6)
+spec:
+  ports:
+  - name: http
+    port: 8080                            # адрес внутри кластера: http://local-llm:8080
+    targetPort: 8080                      # порт vLLM на ноутбуке
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: local-llm-1
+  labels:
+    kubernetes.io/service-name: local-llm   # привязка к Service выше
+addressType: IPv4
+ports:
+- name: http
+  port: 8080
+endpoints:
+- addresses:
+  # 192.168.105.1 — это ноутбук, каким его видят ноды minikube (сеть socket_vmnet).
+  # Модель на ВМ с GPU — впишите сюда её IP (и порт выше)
+  - "192.168.105.1"

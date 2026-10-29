@@ -1,0 +1,41 @@
+# Redis для LiteLLM: общее «оперативное» состояние реплик шлюза — лимиты запросов (rpm/tpm),
+# бюджеты, какие модели сейчас «на охлаждении» после ошибок (cooldown).
+# Без него у каждой реплики свой счётчик: лимит 100 rpm при 2 репликах превращается в 200.
+# Это кэш, не база: том не нужен (долговременное — ключи, расходы — лежит в Postgres)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm-redis
+  template:
+    metadata:
+      labels:
+        app: litellm-redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7.4-alpine
+        args: [--save, "", --appendonly, "no"]   # ничего не писать на диск
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          exec:
+            command: [redis-cli, ping]
+          periodSeconds: 5
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {cpu: 500m, memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-redis
+spec:
+  selector:
+    app: litellm-redis
+  ports:
+  - port: 6379

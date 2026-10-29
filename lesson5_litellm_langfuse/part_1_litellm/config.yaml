@@ -1,0 +1,38 @@
+# Конфиг LiteLLM: какие модели есть у шлюза и куда он за ними ходит
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+data:
+  config.yaml: |
+    model_list:
+      # model_name — имя, которое видят клиенты (агенты); litellm_params — куда реально идёт запрос.
+      # Клиент просит «bank-llm», а что за ним стоит, решает шлюз: провайдера можно поменять, не трогая агентов
+      - model_name: bank-llm
+        litellm_params:
+          model: openrouter/openai/gpt-6-luna      # провайдер/модель: openrouter/<имя модели в OpenRouter>
+          api_key: os.environ/OPENROUTER_API_KEY   # os.environ/… — взять из переменной окружения (из Secret)
+      - model_name: cheap-llm                      # вторая модель — подешевле, для простых задач
+        litellm_params:
+          model: openrouter/openai/gpt-4o-mini
+          api_key: os.environ/OPENROUTER_API_KEY
+
+    litellm_settings:
+      drop_params: true          # параметры, которых модель не знает, молча выкидывать, а не падать
+      num_retries: 2             # упал запрос к провайдеру — повторить
+      cache: true                # Redis как общий кэш реплик: в нём счётчики лимитов ключей (rpm, tpm)
+      cache_params:
+        type: redis
+        host: litellm-redis
+        port: 6379
+        mode: default_off        # а ответы LLM НЕ кэшировать (только если клиент сам попросит)
+      user_url_allowed_hosts: ["risk-manager.default"]
+
+    router_settings:
+      redis_host: litellm-redis  # состояние роутера (ошибки моделей, cooldown) — общее для реплик
+      redis_port: 6379
+
+    general_settings:
+      master_key: os.environ/LITELLM_MASTER_KEY
+      store_model_in_db: true    # модели, добавленные через UI/API, хранить в базе (часть 3)
+  

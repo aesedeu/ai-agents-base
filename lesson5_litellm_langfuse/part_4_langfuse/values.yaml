@@ -1,0 +1,71 @@
+# Настройки Helm-чарта langfuse/langfuse (2.1.6, Langfuse v4) для учебного кластера.
+# Всё, чего здесь нет, — по умолчанию чарта (helm show values langfuse/langfuse).
+# Пароли баз и ключи шифрования чарт сгенерирует сам при первой установке.
+langfuse:
+  nextauth:
+    url: http://langfuse.agents.test      # адрес, по которому открываем UI (на него идут редиректы логина)
+  features:
+    telemetryEnabled: false               # не отправлять статистику использования разработчикам Langfuse
+
+  ingress:                                # UI и API снаружи: http://langfuse.agents.test
+    enabled: true
+    className: nginx
+    hosts:
+    - host: langfuse.agents.test
+      paths:
+      - path: /
+        pathType: Prefix
+
+  # Headless-инициализация: при первом старте Langfuse сам создаёт организацию, проект с API-ключами
+  # и пользователя — не нужно регистрироваться в UI и копировать ключи руками.
+  # Ключи учебные; в проде — из Secret (additionalEnvFrom / secretKeyRef)
+  additionalEnv:
+  - {name: LANGFUSE_INIT_ORG_ID, value: bank}
+  - {name: LANGFUSE_INIT_ORG_NAME, value: Bank}
+  - {name: LANGFUSE_INIT_PROJECT_ID, value: bank-agents}
+  - {name: LANGFUSE_INIT_PROJECT_NAME, value: bank-agents}
+  - {name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY, value: pk-lf-bank-agents}
+  - {name: LANGFUSE_INIT_PROJECT_SECRET_KEY, value: sk-lf-bank-agents}
+  - {name: LANGFUSE_INIT_USER_EMAIL, value: admin@agents.test}
+  - {name: LANGFUSE_INIT_USER_NAME, value: admin}
+  - {name: LANGFUSE_INIT_USER_PASSWORD, value: admin12345}
+
+# Хранилища Langfuse — каждое в одной копии и с маленькими томами (по умолчанию — под прод: 20–100 ГБ).
+# StorageClass local-path (аддон storage-provisioner-rancher, включается в make setup), а не standard:
+#  - в папку тома может писать не-root контейнер (Postgres и Valkey чарта работают не от root —
+#    на standard они падают с «Permission denied»);
+#  - том привязан к своей ноде, и под после перезапуска сам вернётся к данным (в занятии 4 для
+#    bank-db мы делали это вручную через nodeSelector)
+postgresql:                 # пользователи, проекты, ключи, промпты
+  storage:
+    requestedSize: 2Gi
+    className: local-path
+redis:                      # очередь событий между web и worker (Valkey — форк Redis)
+  dataStorage:
+    requestedSize: 1Gi
+    className: local-path
+s3:                         # S3 (SeaweedFS): сырые события и медиа
+  allInOne:
+    data:
+      size: 5Gi
+      storageClass: local-path
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {cpu: "1", memory: 1Gi}
+clickhouse:                 # трейсы и наблюдения — аналитическая колоночная БД
+  cluster:
+    replicas: 1
+    storage:
+      size: 5Gi
+      className: local-path
+    resources:
+      requests: {cpu: 250m, memory: 1Gi}
+      limits: {memory: 3Gi}
+  keeper:                   # координатор ClickHouse (аналог ZooKeeper). В проде 3, нам хватит 1
+    replicas: 1
+    storage:
+      size: 1Gi
+      className: local-path
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {memory: 1Gi}

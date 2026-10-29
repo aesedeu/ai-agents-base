@@ -1,0 +1,202 @@
+# Агенты из занятия 4: MCP-сервер ×2, аналитик ×2, риск-менеджер ×2 (общая память в Postgres) + Ingress.
+# Отличие от занятия 4 одно: откуда агент берёт LLM — теперь целиком из окружения:
+#   ConfigMap agents-config → LLM_BASE_URL и MODEL,   Secret llm-key-<агент> → LLM_API_KEY.
+# Пока (часть 0) это OpenRouter напрямую; в части 2 переключим на LiteLLM, не трогая Deployment-ы.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agents-config
+data:
+  LLM_BASE_URL: https://openrouter.ai/api/v1   # куда агенты ходят за LLM: пока прямо в OpenRouter
+  MODEL: openai/gpt-6-luna                     # имя модели у провайдера
+  MCP_URL: http://bank-mcp:8101/mcp            # где инструменты
+  ANALYST_URL: http://analyst:8102             # где аналитик
+# Ключи — НЕ здесь, а в Secret llm-key-analyst и llm-key-risk:  make secret  (берёт ключ из .env)
+---
+# ── MCP-сервер с инструментами банка ─────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bank-mcp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bank-mcp
+  template:
+    metadata:
+      labels:
+        app: bank-mcp
+    spec:
+      containers:
+      - name: mcp
+        image: bank-agents:1
+        command: [python, mcp_server.py]
+        lifecycle:
+          preStop:                             # ещё 5 с отвечать, пока Service убирает под из балансировки
+            exec:
+              command: [sleep, "5"]
+        env:
+        - name: BANK_DSN                       # в базу — ролью только для чтения
+          value: postgresql://mcp_reader:mcp_reader@bank-db:5432/bank
+        ports:
+        - containerPort: 8101
+        readinessProbe:
+          tcpSocket:
+            port: 8101
+          periodSeconds: 5
+        resources:
+          requests: {cpu: 50m, memory: 128Mi}
+          limits: {cpu: 500m, memory: 384Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bank-mcp
+spec:
+  selector:
+    app: bank-mcp
+  ports:
+  - port: 8101
+---
+# ── аналитик (A2A, только внутри кластера) ───────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analyst
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: analyst
+  template:
+    metadata:
+      labels:
+        app: analyst
+    spec:
+      terminationGracePeriodSeconds: 120       # даём доделать долгие запросы при остановке
+      containers:
+      - name: analyst
+        image: bank-agents:1
+        command: [python, analyst_agent.py]
+        lifecycle:
+          preStop:
+            exec:
+              command: [sleep, "5"]
+        envFrom:
+        - configMapRef:
+            name: agents-config                # LLM_BASE_URL, MODEL, MCP_URL
+        - secretRef:
+            name: llm-key-analyst              # LLM_API_KEY — свой ключ у каждого агента
+        env:
+        - name: PUBLIC_URL
+          value: http://analyst:8102/
+        ports:
+        - containerPort: 8102
+        startupProbe:
+          httpGet: {path: /.well-known/agent-card.json, port: 8102}
+          periodSeconds: 5
+          failureThreshold: 30
+        readinessProbe:
+          httpGet: {path: /.well-known/agent-card.json, port: 8102}
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: {path: /.well-known/agent-card.json, port: 8102}
+          periodSeconds: 10
+          failureThreshold: 3
+        resources:
+          requests: {cpu: 100m, memory: 256Mi}
+          limits: {cpu: "1", memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analyst
+spec:
+  selector:
+    app: analyst
+  ports:
+  - port: 8102
+---
+# ── риск-менеджер (A2A, вход для пользователей; память — в Postgres) ─────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-manager
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: risk-manager
+  template:
+    metadata:
+      labels:
+        app: risk-manager
+    spec:
+      terminationGracePeriodSeconds: 120
+      containers:
+      - name: risk
+        image: bank-agents:1
+        command: [python, risk_agent.py]
+        lifecycle:
+          preStop:
+            exec:
+              command: [sleep, "5"]
+        envFrom:
+        - configMapRef:
+            name: agents-config                # LLM_BASE_URL, MODEL, ANALYST_URL
+        - secretRef:
+            name: llm-key-risk                 # LLM_API_KEY
+        env:
+        - name: PUBLIC_URL
+          value: http://risk.agents.test/
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: bank-db-secret
+              key: POSTGRES_PASSWORD
+        - name: CHECKPOINT_DSN                 # память разговоров — в Postgres (база agent)
+          value: postgresql://postgres:$(POSTGRES_PASSWORD)@bank-db:5432/agent
+        ports:
+        - containerPort: 8103
+        readinessProbe:
+          httpGet: {path: /.well-known/agent-card.json, port: 8103}
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: {path: /.well-known/agent-card.json, port: 8103}
+          periodSeconds: 10
+        resources:
+          requests: {cpu: 100m, memory: 256Mi}
+          limits: {cpu: "1", memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: risk-manager
+spec:
+  selector:
+    app: risk-manager
+  ports:
+  - port: 8103
+---
+# Снаружи доступен только риск-менеджер: http://risk.agents.test
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: risk-manager
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"   # агент думает дольше 60 с
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: risk.agents.test
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: risk-manager
+            port:
+              number: 8103

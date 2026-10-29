@@ -1,0 +1,16 @@
+# ServiceMonitor — «что собирать» для Prometheus: все Service с меткой app: local-llm,
+# порт http, путь /metrics. Это наш Service без selector из части 3, поэтому Prometheus
+# ходит за метриками прямо к vLLM на ноутбук (192.168.105.1:8080/metrics).
+# /metrics у vLLM открыт без API-ключа — ключ нужен только для /v1/*
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: local-llm
+spec:
+  selector:
+    matchLabels:
+      app: local-llm
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 15s                    # раз в 15 с — дашборд почти «живой»

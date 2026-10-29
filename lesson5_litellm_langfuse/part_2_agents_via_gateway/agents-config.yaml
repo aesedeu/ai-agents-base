@@ -1,0 +1,11 @@
+# Агенты ходят за LLM через шлюз. Изменились ДВЕ строки (было — OpenRouter напрямую, часть 0):
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agents-config
+data:
+  LLM_BASE_URL: http://litellm:4000    # ← было https://openrouter.ai/api/v1 : теперь наш LiteLLM (Service)
+  MODEL: bank-llm                      # ← было openai/gpt-6-luna : теперь имя модели в шлюзе
+  MCP_URL: http://bank-mcp:8101/mcp
+  ANALYST_URL: http://analyst:8102
+# Ключи агентов (Secret llm-key-analyst / llm-key-risk) — виртуальные ключи LiteLLM: make agent-keys

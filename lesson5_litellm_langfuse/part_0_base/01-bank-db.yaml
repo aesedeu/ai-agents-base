@@ -1,0 +1,100 @@
+# База банка из занятия 4: пароль (Secret) + init.sql (ConfigMap) + том (PVC) + Postgres (Deployment) + адрес bank-db:5432
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bank-db-secret
+type: Opaque
+stringData:                     # stringData: можно писать обычный текст, Kubernetes сам сделает base64
+  POSTGRES_PASSWORD: postgres   # учебный пароль
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bank-db-init
+data:
+  init.sql: |
+    -- роль для MCP-сервера: только чтение
+    CREATE ROLE mcp_reader LOGIN PASSWORD 'mcp_reader';
+    ALTER ROLE mcp_reader SET default_transaction_read_only = on;
+    GRANT CONNECT ON DATABASE bank TO mcp_reader;
+    GRANT USAGE ON SCHEMA public TO mcp_reader;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO mcp_reader;
+    -- отдельная база для общей памяти риск-менеджера (занятие 4, часть 7)
+    CREATE DATABASE agent;
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bank-db-data
+spec:
+  accessModes: [ReadWriteOnce]      # том подключается к одной ноде
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: standard        # дефолтный StorageClass minikube: папка на диске ноды
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bank-db
+spec:
+  replicas: 1                       # у базы одна копия: две не могут писать в один том
+  strategy:
+    type: Recreate                  # при обновлении сначала остановить старый под, потом запустить новый
+  selector:
+    matchLabels:
+      app: bank-db
+  template:
+    metadata:
+      labels:
+        app: bank-db
+    spec:
+      # Том minikube — это папка на диске КОНКРЕТНОЙ ноды. Привязываем базу к ноде, чтобы
+      # после перезапуска под всегда попадал туда, где лежат его данные.
+      nodeSelector:
+        kubernetes.io/hostname: minikube
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        env:
+        - name: POSTGRES_DB
+          value: bank
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: bank-db-secret
+              key: POSTGRES_PASSWORD
+        - name: PGDATA                          # данные — в подпапку тома
+          value: /var/lib/postgresql/data/pgdata
+        ports:
+        - containerPort: 5432
+        readinessProbe:                         # под «готов», только когда база принимает подключения
+          exec:
+            command: [pg_isready, -U, postgres, -d, bank]
+          periodSeconds: 5
+        resources:
+          requests: {cpu: 100m, memory: 256Mi}
+          limits: {cpu: "1", memory: 1Gi}
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data   # сюда Postgres пишет данные → на том
+        - name: init
+          mountPath: /docker-entrypoint-initdb.d  # init.sql из ConfigMap — выполнится при первом старте
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: bank-db-data
+      - name: init
+        configMap:
+          name: bank-db-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bank-db
+spec:
+  selector:
+    app: bank-db
+  ports:
+  - port: 5432

@@ -1,0 +1,101 @@
+# LiteLLM — LLM-шлюз (gateway): один OpenAI-совместимый адрес litellm:4000 для всех агентов.
+# Состояние (виртуальные ключи, расходы, модели из UI) — в Postgres, поэтому реплик может быть несколько.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: litellm
+  template:
+    metadata:
+      labels:
+        app: litellm
+    spec:
+      terminationGracePeriodSeconds: 120       # через шлюз идут долгие запросы к LLM — даём им доделаться
+      containers:
+      - name: litellm
+        image: ghcr.io/berriai/litellm:v1.106.3   # последняя версия на момент занятия; тег — всегда конкретный
+        args: [--config, /app/config.yaml, --port, "4000"]
+        lifecycle:
+          preStop:
+            exec:
+              command: [sleep, "5"]
+        envFrom:
+        - secretRef:
+            name: litellm-secret               # LITELLM_MASTER_KEY, LITELLM_SALT_KEY
+        - secretRef:
+            name: openrouter                   # OPENROUTER_API_KEY
+        - secretRef:
+            name: litellm-langfuse             # LANGFUSE_* — куда слать трейсы (часть 5).
+            optional: true                     # optional: пока Secret-а нет, под всё равно запускается
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: bank-db-secret
+              key: POSTGRES_PASSWORD
+        - name: DATABASE_URL                   # своя база litellm в том же Postgres (создаём её в README)
+          value: postgresql://postgres:$(POSTGRES_PASSWORD)@bank-db:5432/litellm
+        # Только для minikube на Mac M4+: в виртуалке OpenSSL 4 (он внутри образа) падает
+        # «Illegal instruction», пока сам определяет возможности процессора. Говорим ему их явно:
+        # NEON + AES + SHA1 + SHA256 + PMULL — их умеет любой ARM-сервер. На x86 переменная ни на что не влияет
+        - name: OPENSSL_armcap
+          value: "0x3d"
+        ports:
+        - containerPort: 4000
+        startupProbe:                          # первый старт долгий: LiteLLM создаёт таблицы в базе
+          httpGet: {path: /health/liveliness, port: 4000}
+          periodSeconds: 5
+          failureThreshold: 60
+        readinessProbe:                        # готов: поднялся и видит базу
+          httpGet: {path: /health/readiness, port: 4000}
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: {path: /health/liveliness, port: 4000}
+          periodSeconds: 15
+        resources:
+          requests: {cpu: 250m, memory: 768Mi}
+          limits: {cpu: "2", memory: 2Gi}
+        volumeMounts:
+        - name: config                         # config.yaml читается только при старте:
+          mountPath: /app/config.yaml          # поменяли ConfigMap — kubectl rollout restart deploy/litellm
+          subPath: config.yaml                 # один файл из ConfigMap, а не вся папка /app
+      volumes:
+      - name: config
+        configMap:
+          name: litellm-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm
+spec:
+  selector:
+    app: litellm
+  ports:
+  - port: 4000
+---
+# Снаружи: http://llm.agents.test — API (OpenAI-совместимый) и админка /ui
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: litellm
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"   # ответ LLM бывает долгим
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: llm.agents.test
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: litellm
+            port:
+              number: 4000

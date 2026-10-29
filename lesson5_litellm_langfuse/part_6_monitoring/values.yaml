@@ -1,0 +1,40 @@
+# kube-prometheus-stack: Prometheus (собирает метрики) + Grafana (рисует) + экспортёры нод и подов.
+# Как в занятии 4, плюс готовый дашборд vLLM с grafana.com.
+grafana:
+  adminPassword: admin               # вход: admin / admin
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts: [grafana.agents.test]
+  # Дашборды с grafana.com по номеру: Grafana сама скачает JSON при старте
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+      - name: grafana-com
+        folder: LLM                  # папка в Grafana
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards/grafana-com
+  dashboards:
+    grafana-com:                     # имя провайдера выше
+      vllm:
+        gnetId: 24756                # «vLLM Monitoring - V2»: очередь, KV-кэш, TTFT, токены/с, prefix cache
+        revision: 1
+        datasource:                  # в JSON дашборда источник — заглушка ${DS_PROMETHEUS}:
+        - name: DS_PROMETHEUS        #   заменяем её на uid нашего Prometheus
+          value: prometheus
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false   # видеть и наши ServiceMonitor, а не только свои
+    # Искать цели ServiceMonitor через EndpointSlice (по умолчанию — через устаревшие Endpoints).
+    # У нашего Service без selector (local-llm, часть 3) есть только EndpointSlice — без этой строки
+    # Prometheus находит ServiceMonitor, но отбрасывает его цели
+    serviceDiscoveryRole: EndpointSlice
+    retention: 1d                                    # учебный кластер: храним сутки
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts: [prometheus.agents.test]
+alertmanager:
+  enabled: false                     # алерты на занятии не разбираем — экономим память кластера

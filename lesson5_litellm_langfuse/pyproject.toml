@@ -1,0 +1,14 @@
+[project]
+name = "lesson5-litellm-langfuse"
+version = "0.1.0"
+description = "Lesson 5: LLM gateway (LiteLLM) and Langfuse in Kubernetes — the client side"
+requires-python = ">=3.12"
+dependencies = [
+    "ipykernel>=6",
+    "openai>=1.60",
+    "a2a-sdk[http-server]>=1.2",
+    "httpx>=0.27",
+]
+
+[tool.uv]
+package = false

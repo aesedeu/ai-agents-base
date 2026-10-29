@@ -1,0 +1,10 @@
+# Агенты переходят на свою модель: поменялась ОДНА строка (MODEL) — остальное как в части 2
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agents-config
+data:
+  LLM_BASE_URL: http://litellm:4000
+  MODEL: local-llm                       # ← было bank-llm : своя модель (vLLM на ноутбуке); при её падении — fallback на bank-llm
+  MCP_URL: http://bank-mcp:8101/mcp
+  ANALYST_URL: http://analyst:8102
